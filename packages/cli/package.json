@@ -1,0 +1,12 @@
+{
+  "name": "duckip-cli",
+  "version": "0.1.0",
+  "description": "DuckIP public API and account CLI",
+  "type": "module",
+  "bin": { "duckip": "bin/duckip.js" },
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test", "start": "node bin/duckip.js" },
+  "files": ["bin", "src", "README.md", "docs"],
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -1,0 +1,8 @@
+{
+  "pid": 123,
+  "pm_id": 1,
+  "product_sku_bandwidth_id": 10,
+  "product_sku_concurrency_id": 20,
+  "product_sku_duration_id": 30,
+  "etd": 1
+}

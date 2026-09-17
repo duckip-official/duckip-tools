@@ -1,0 +1,4 @@
+interface:
+  display_name: "DuckIP CLI"
+  short_description: "Operate and troubleshoot the DuckIP CLI"
+  default_prompt: "Use $duckip-cli to inspect or operate DuckIP through the local CLI."

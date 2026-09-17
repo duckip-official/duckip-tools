@@ -1,0 +1,12 @@
+{
+  "name": "duckip-mcp",
+  "version": "0.1.0",
+  "description": "DuckIP MCP server over stdio",
+  "type": "module",
+  "bin": { "duckip-mcp": "bin/duckip-mcp.js" },
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node bin/duckip-mcp.js", "test": "node --test" },
+  "files": ["bin", "src", "README.md"],
+  "license": "UNLICENSED",
+  "private": true
+}
