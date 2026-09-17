@@ -8,5 +8,6 @@
   "scripts": { "test": "node --test", "start": "node bin/duckip.js" },
   "files": ["bin", "src", "README.md", "docs"],
   "license": "UNLICENSED",
-  "private": true
+  "repository": { "type": "git", "url": "https://github.com/duckip-official/duckip-tools.git" },
+  "publishConfig": { "access": "public" }
 }
