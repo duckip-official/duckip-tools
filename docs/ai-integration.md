@@ -4,9 +4,9 @@
 
 | 入口 | 用户动作 | 当前实现 | 发布前还需要 |
 | --- | --- | --- | --- |
-| Skill | `npx skills add ... --skill duckip-cli` | `packages/skill` 有 Skill 内容 | 发布 `skills/duckip-cli/SKILL.md`，并确保引用的 README 存在 |
-| MCP | `npx -y duckip-mcp` | stdio JSON-RPC、`tools/list`、确认保护 | 发布 npm 包，提供各客户端配置片段 |
-| CLI | `duckip ...` | 命令、认证、`--json`、`--dry-run` | 提供 npm 入口和三端独立可执行文件 |
+| Skill | `npx skills add ... --skill duckip-cli` | `skills/duckip-cli/SKILL.md`，从 GitHub 安装 | 保持 Skill 文档和 CLI 版本同步 |
+| MCP | `npx -y @duckip/mcp` | stdio JSON-RPC、`tools/list`、确认保护 | 已发布到 npm；可继续补充客户端配置 |
+| CLI | `npx -y @duckip/cli ...` | 命令、认证、`--json`、`--dry-run` | 已发布到 npm；可继续补充独立二进制 |
 
 ## 建议的用户命令
 
@@ -19,26 +19,23 @@ npx skills add https://github.com/duckip-official/duckip-tools --skill duckip-cl
 Claude Code：
 
 ```powershell
-claude mcp add duckip -- npx -y duckip-mcp
+claude mcp add duckip -- npx -y @duckip/mcp
 ```
 
 Codex：
 
 ```powershell
-codex mcp add duckip -- npx -y duckip-mcp
+codex mcp add duckip -- npx -y @duckip/mcp
 ```
 
 需要环境变量时，在对应客户端的 MCP 配置中加入 `DUCKIP_APP_KEY`、`DUCKIP_TOKEN` 和可选的 `DUCKIP_API_URL`。不要把密钥写进复制命令或仓库文件。
 
-## 当前代码还缺少的发布能力
+## 后续可完善的发布能力
 
-1. `packages/cli` 和 `packages/mcp` 是私有 npm 包，`npx -y` 无法从 npm 安装。
-2. Skill 没有 AdsPower 采用的 `skills/duckip-cli` 目录布局。
-3. 两个包都声明了不存在的 `README.md`，发布前 `npm pack --dry-run` 会暴露这个问题。
-4. CLI 和 MCP 各自维护一份命令定义、客户端和配置代码，长期会产生工具列表与 CLI 行为漂移。发布前应抽出 `packages/core`，让两者共享 API contract、认证和脱敏逻辑。
-5. 版本号在 CLI、MCP、User-Agent 和帮助文本中有硬编码，发布流程应从 package version 读取。
-6. 目前只有 Node.js 入口，没有 Windows、macOS、Linux 的自包含可执行文件、签名、校验和及更新清单。
-7. 缺少发布 smoke test：应在干净机器上验证 `duckip --help`、`duckip-mcp` 的 MCP 初始化、Skill 安装和凭据目录权限。
+1. CLI 和 MCP 各自维护一份命令定义、客户端和配置代码，长期会产生工具列表与 CLI 行为漂移。后续可以抽出 `packages/core`，让两者共享 API contract、认证和脱敏逻辑。
+2. 版本号在 CLI、MCP、User-Agent 和帮助文本中有硬编码，后续发布流程应从 package version 读取。
+3. 目前只有 Node.js 入口，没有 Windows、macOS、Linux 的自包含可执行文件、签名、校验和及更新清单。
+4. 需要在干净用户目录持续验证 `npx -y @duckip/cli --help`、MCP 初始化和 Skill 安装。
 
 ## 三端 CLI 的推荐方案
 
@@ -65,7 +62,7 @@ codex mcp add duckip -- npx -y duckip-mcp
 ## 发布前验收清单
 
 - `npm pack --dry-run` 的文件列表不包含测试、凭据或本地配置。
-- `npx -y duckip-cli --help` 和 `npx -y duckip-mcp` 在全新用户目录可运行。
+- `npx -y @duckip/cli --help` 和 `npx -y @duckip/mcp` 在全新用户目录可运行。
 - MCP 客户端能看到只读工具；提取、订单、账户和支付工具仍要求明确确认。
 - `DUCKIP_APP_KEY` 与 `DUCKIP_TOKEN` 的来源、优先级和脱敏行为在三种分发方式中一致。
 - Windows、macOS、Linux 的归档文件名、架构、最低系统版本和校验和在下载页明确显示。

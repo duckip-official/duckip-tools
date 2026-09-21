@@ -1,7 +1,7 @@
 # DuckIP CLI
 
 ```powershell
-npx -y duckip-cli --help
+npx -y @duckip/cli --help
 ```
 
 本地开发可运行 `node bin/duckip.js --help`。凭据使用 `DUCKIP_APP_KEY`、`DUCKIP_TOKEN`、`DUCKIP_PASSWORD`，或由 `auth key` / `auth login` 保存到用户配置目录。
