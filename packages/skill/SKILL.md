@@ -1,67 +1,72 @@
 ---
 name: duckip-cli
-description: "Use the DuckIP CLI in this repository to inspect products, proxies, usage, orders, and account settings; apply when a user asks to operate or troubleshoot DuckIP through the CLI."
+description: "Operate DuckIP through its CLI or MCP tools when a user asks about proxy extraction, purchased packages, traffic remaining, proxy accounts, IP whitelists, teams, wallets, orders, payment, invoices, or DuckIP API troubleshooting. 适用于 DuckIP 代理、套餐余量、团队钱包、订单和接入排错。"
 ---
 
-# DuckIP CLI
+# DuckIP
 
-Use this skill for work performed through `packages/cli`, including
-running a command, diagnosing an API response, adding a supported CLI command,
-or explaining the DuckIP public API and dashboard flows. Do not route generic
-CLI design or unrelated proxy-provider work here.
+Use the published CLI as `npx -y @duckip/cli <command>`, or use the connected DuckIP MCP tools.
+This skill is an operating guide, not an API credential or a replacement for the CLI/MCP package.
 
-## Before running a command
+## Start here
 
-- Work from `packages/cli` and use `duckip.cmd` on Windows or
-  `node bin/duckip.js` elsewhere.
-- Read [README.md](../cli/README.md) for usage and
-  [api-notes.md](../cli/docs/api-notes.md) when the request involves authentication,
-  orders, payments, or a mismatch between public API and dashboard behavior.
-- Keep credentials out of command text, logs, chat, parameter files, and source
-  code. Prefer `DUCKIP_APP_KEY`, `DUCKIP_TOKEN`, and `DUCKIP_PASSWORD`, or let
-  the CLI collect secrets through its hidden prompt. Do not ask the user to
-  paste a secret into the conversation.
-- Use `--json` when another command or script needs structured output. Ordinary
-  output masks proxy passwords and credential-like fields.
+1. Inspect `npx -y @duckip/cli --version` and the relevant command's `--help`, or the connected MCP tool schema.
+   The installed package may predate this GitHub skill. If a command is missing, report the version mismatch rather than inventing a command.
+2. Use `auth status` / `duckip_auth_status` to inspect credential availability. This checks configuration, not live permissions.
+3. Choose the user's intended resource space and meaning of “balance”; use the routing reference below.
+4. Read [references/commands.md](references/commands.md) for command routes, required identifiers, example workflows and troubleshooting.
 
-## Authentication model
+## Credentials and space
 
-Public `/developers/*` endpoints authenticate with `app_key`. Dashboard
-`/web_v1/*` endpoints authenticate with `Authorization: Bearer <access_token>`.
-Do not combine these modes or assume that a dashboard login fixes a rejected
-public App Key. `auth key` validates only the App Key; `auth login` obtains a
-dashboard token and may discover the user's `openid` for public API use.
+- Public commands use an App Key. Have the user run `npx -y @duckip/cli auth key` in a terminal, or use a secret supplied through the execution environment.
+- Never ask the user to paste credentials into chat. Do not print config files, expose environment values, or embed secrets in shell commands, source, logs or JSON parameter files.
+- DUCKIP_APP_KEY and DUCKIP_TOKEN override saved credentials. Default config is the user's .duckip/config.json; DUCKIP_CONFIG overrides it.
+- CLI and MCP can share configuration only when they run under the same user/filesystem. Remote or container clients need their own protected setup.
+- Default API origin is https://api.duckip.com. Use another origin only when it is the user's intended account environment; never switch hosts automatically on authentication failure.
+- A team ID is a public 6–12 character ASCII alphanumeric ID starting with a letter, obtained from team list, not an internal numeric ID.
+- Pass the same team_id through related operations. Only supported commands accept it. A team-bound Key cannot be used to select an unrelated team.
+- Never silently fall back to personal space when a team request fails.
 
-When an endpoint reports code 3 or “session expired”, preserve the exact endpoint
-and authentication mode in the diagnosis. Check `auth status` for environment
-variables overriding the saved file before asking the user to change credentials.
+## Select the right measurement
 
-## Side-effect boundary
+- Remaining traffic: `usage flow-total --unit GB` / `duckip_usage_flow_total`.
+- Purchased packages: `packages list` and `packages summary`.
+- Personal cash balance: `balance` / `duckip_balance`, currently requires a dashboard Token.
+- Team cash balance: `team wallet --team-id TEAM_ID` / `duckip_team_wallet`; requires VIEW_BILLING permission.
+- Account/whitelist capacity: `accounts quota(s)` / `whitelist quota(s)`, resource counts, not GB or cash.
+- If “balance” remains ambiguous after context, clarify cash versus traffic and the intended team before accessing financial data.
+- Preserve returned units/currency, timestamps, request_id and pagination. Do not label one page as the full account total.
 
-Treat proxy extraction as quota-consuming, and treat account changes, whitelist
-changes, order creation, order cancellation, and payment as external mutations.
+## Authorization and side effects
 
-- Use `--dry-run` first when preparing an order or unfamiliar request.
-- `orders create` must complete a fresh `orders check` preflight and show the
-  returned price before confirmation. Do not skip this check or retry blindly.
-- `orders pay` must read the exact order, verify it is unpaid and has a valid
-  price, then confirm immediately before balance payment.
-- Ask for confirmation immediately before destructive or financial actions unless
-  the user explicitly authorized that exact action and supplied the scope. The
-  CLI's `--yes` is a confirmation mechanism, not a reason to invent scope.
-- After timeout or uncertain payment, query order status before retrying. The
-  CLI intentionally does not retry orders or payments automatically.
+Extraction may consume quota. Account/whitelist changes, order creation/cancellation and payment change external state.
+Use --dry-run to inspect a request without calling the API; it does not prove availability or permission.
+CLI mutations require a terminal confirmation or --yes; MCP mutations require confirm=true.
+npx -y only approves package execution, not a DuckIP purchase or extraction.
 
-## Verification
+Proceed within an already authorized exact scope. Otherwise obtain user authorization for the specific target, quantity, cost and action.
+Do not add --yes or confirm=true merely to bypass a failed tool call. Do not invent product IDs, payment IDs, package IDs or team IDs.
 
-Use `node --test` for the repository's tests. Do not run project build commands
-under `D:/project`; the repository has an explicit build ban. For changes to the
-skill itself, run the bundled validator:
+For purchases, query products and payment methods, run orders check, show the actual quote and obtain authorization before orders create.
+For payment, inspect the exact order and orders pay-check; show amount, currency and payment method before orders pay.
+These write commands recheck the corresponding state/quote, but a quote is not a price lock.
+Keep the authorized amount/method in scope; if they change, review with the user.
+A public pm_id is not the dashboard pay_method; never assume ID 7 selects balance.
 
-```powershell
-python C:\Users\Administrator\.codex\skills\.system\skill-creator\scripts\quick_validate.py `
-  D:\project\skills\duckip-cli
-```
+After payment, query the order. An order number, payment URL or successful payment initiation is not proof of payment.
+After timeout, inspect status before any retry. Do not retry financial operations blindly.
 
-Keep the skill focused. Add a reference or script only when the workflow needs
-maintained, reusable detail; do not copy the entire public API document here.
+## Results and errors
+
+Prefer --json for structured output. MCP already returns structured objects with text.
+Keep secrets masked; do not use --show-secrets in chat or shared logs.
+Distinguish command/API success, authorized live verification and an actual published release.
+For code 3, preserve the endpoint and auth mode; check credential source and intended origin, not just password login.
+Stop on permission errors, rate limits, MFA requirements or uncertain financial outcomes and explain the concrete next step.
+
+## Current boundaries
+
+The CLI supports read-only queries for API Key metadata, teams/assets/wallets, automatic renewal and invoices.
+It does not yet create/revoke Keys, manage team members/invitations, transfer assets/funds, enable automatic renewal, apply/cancel invoices, or manage credit.
+Route those actions to the DuckIP dashboard. Do not construct unsupported HTTP requests to bypass this boundary.
+This guide is self-contained after installation; do not assume access to the source repository or a developer's local disk paths.

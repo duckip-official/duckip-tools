@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable, Writable } from 'node:stream';
 import { commands } from '../src/commands.js';
+import { version } from '../src/metadata.js';
 import { createMcpContext, dispatch, listTools, mcpToolName, commandFromToolName, runMcpProcess } from '../src/mcp.js';
 
 function response(code, data, message = 'ok') {
@@ -46,6 +47,7 @@ test('MCP tools are derived from CLI commands, including hyphenated commands', (
 test('initialize, ping, notification, and unknown method follow JSON-RPC', async () => {
   const init = await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   assert.equal(init.result.serverInfo.name, 'duckip-mcp');
+  assert.equal(init.result.serverInfo.version, version);
   assert.equal(init.result.capabilities.tools.listChanged, false);
   assert.equal((await dispatch({ jsonrpc: '2.0', id: 4, method: 'initialize', params: { protocolVersion: '2024-11-05' } })).result.protocolVersion, '2024-11-05');
   assert.deepEqual((await dispatch({ jsonrpc: '2.0', id: 2, method: 'ping' })).result, {});
@@ -79,6 +81,33 @@ test('mutating tools require confirm and validate before network', async (t) => 
   assert.equal(invalid.requests.length, 0);
 });
 
+test('unlisted authentication commands cannot be called through MCP', async (t) => {
+  const h = helper(t, () => response(200, {}));
+  for (const command of ['auth login', 'auth key', 'auth token', 'auth logout']) {
+    const result = await dispatch({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: mcpToolName(command), arguments: {} } }, { context: h.context });
+    assert.equal(result.error.code, -32602);
+  }
+  assert.equal(h.requests.length, 0);
+});
+
+test('MCP rejects non-object arguments and invalid payment previews', async (t) => {
+  const malformed = await call(t, 'usage flow-total', []);
+  assert.equal(malformed.result.result.isError, true);
+  assert.equal(malformed.requests.length, 0);
+  for (const quote of [
+    { trade_no: 'other', pay_fee: 1, pm_id: 3 },
+    { trade_no: 'T-2', pay_fee: null, pm_id: 3 },
+    { trade_no: 'T-2', pay_fee: 1, pm_id: 4 },
+  ]) {
+    const h = await call(t, 'orders pay', { team_id: 'A12345', trade_no: 'T-2', pm_id: 3, confirm: true }, (_r, count) => response(200, count === 1 ? { trade_no: 'T-2', status: 0, pay_fee: 1 } : quote));
+    assert.equal(h.result.result.isError, true);
+    assert.equal(h.requests.length, 2);
+    assert.equal(h.requests[0].url.searchParams.get('team_id'), 'A12345');
+    assert.equal(h.requests[0].url.searchParams.has('pm_id'), false);
+    assert.equal(h.requests[1].url.searchParams.get('pm_id'), '3');
+  }
+});
+
 test('order creation preflights and submits identical parameters after confirmation', async (t) => {
   const h = await call(t, 'orders create', { pid: 1, pm_id: 0, confirm: true }, (_request, count) => response(0, count === 1 ? { pay_fee: 3.5 } : { trade_no: 'T-1' }));
   assert.equal(h.result.result.structuredContent.data.trade_no, 'T-1');
@@ -95,16 +124,31 @@ test('order creation stops when preflight has no valid price', async (t) => {
   assert.equal(h.requests.length, 1);
 });
 
-test('balance payment verifies order and sends dashboard pay_method 7', async (t) => {
+test('public payment verifies order and sends App Key query parameters', async (t) => {
   const h = await call(t, 'orders pay', { trade_no: 'T-1', confirm: true }, (_request, count) => count === 1
     ? response(200, { trade_no: 'T-1', status: 0, pay_fee: '2.50' })
-    : response(200, { trade_no: 'T-1', status: 1 }));
-  assert.equal(h.requests.length, 2);
-  assert.equal(h.requests[0].url.pathname, '/web_v1/order/info');
-  assert.equal(h.requests[1].url.pathname, '/web_v1/pay');
-  assert.equal(h.requests[1].body.pay_method, 7);
-  assert.equal(h.requests[1].init.headers.Authorization, 'Bearer mcp-token');
-  assert.equal(h.requests[1].body.app_key, undefined);
+    : response(200, { trade_no: 'T-1', pay_fee: '2.50', status: 1 }));
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.requests[0].url.pathname, '/developers/order/info');
+  assert.equal(h.requests[1].url.pathname, '/developers/pay/pay-check');
+  assert.equal(h.requests[2].url.pathname, '/developers/pay');
+  assert.equal(h.requests[2].url.searchParams.get('app_key'), 'mcp-app-key');
+  assert.equal(h.requests[2].url.searchParams.get('trade_no'), 'T-1');
+  assert.equal(h.requests[2].body, undefined);
+  assert.equal(h.requests[2].init.headers.Authorization, undefined);
+  assert.equal(h.requests[0].url.searchParams.has('team_id'), false);
+});
+
+test('new MCP read-only tools expose public paths and payment check query transport', async (t) => {
+  const wallet = await call(t, 'team wallet', { team_id: 'A12345' });
+  assert.equal(wallet.requests[0].url.pathname, '/developers/team/wallet/detail');
+  assert.equal(wallet.requests[0].url.searchParams.get('team_id'), 'A12345');
+  assert.equal(listTools().find((tool) => tool.name === 'duckip_team_wallet').annotations.readOnlyHint, true);
+  const check = await call(t, 'orders pay-check', { trade_no: 'T-2', pm_id: 3 });
+  assert.equal(check.requests[0].url.pathname, '/developers/pay/pay-check');
+  assert.equal(check.requests[0].init.method, 'POST');
+  assert.equal(check.requests[0].url.searchParams.get('pm_id'), '3');
+  assert.equal(check.requests[0].body, undefined);
 });
 
 test('IP extraction requires confirmation because it consumes quota', async (t) => {

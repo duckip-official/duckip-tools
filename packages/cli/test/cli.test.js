@@ -9,6 +9,8 @@ import { Readable } from 'node:stream';
 import { once } from 'node:events';
 import { run, parseCommand } from '../src/cli.js';
 import { commands, validateFields } from '../src/commands.js';
+import { commands as mcpCommands } from '../../mcp/src/commands.js';
+import { version } from '../src/metadata.js';
 import { createClient, maskSecrets } from '../src/client.js';
 import { readConfig, saveConfig } from '../src/config.js';
 
@@ -49,6 +51,97 @@ test('help is available for every command without network or config', async (t) 
     assert.match(result.stdout, /Usage: duckip/);
   }
   assert.equal(h.requests.length, 0);
+});
+
+test('CLI and MCP API contracts and HTTP clients stay synchronized', async () => {
+  assert.deepEqual(commands, mcpCommands);
+  const cli = await readFile(new URL('../src/client.js', import.meta.url), 'utf8');
+  const mcp = await readFile(new URL('../../mcp/src/client.js', import.meta.url), 'utf8');
+  assert.equal(cli.replaceAll('\r\n', '\n'), mcp.replaceAll('\r\n', '\n'));
+});
+
+test('CLI help and version read package metadata', async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.invoke(['--version'])).stdout, `${version}\n`);
+  assert.ok((await h.invoke(['--help'])).stdout.startsWith(`DuckIP CLI ${version}\n`));
+});
+
+test('new package, quota, renewal, and invoice commands follow the reference contract', async (t) => {
+  const cases = [
+    ['team list', { page: 2, page_size: 5 }, 'GET', '/developers/team/list', 200],
+    ['team detail', { team_id: 'A12345' }, 'GET', '/developers/team/detail', 200],
+    ['team assets', { team_id: 'A12345' }, 'GET', '/developers/team/assets', 200],
+    ['team wallet-records', { team_id: 'A12345' }, 'GET', '/developers/team/wallet/records', 200],
+    ['accounts quotas', { team_id: 'A12345' }, 'GET', '/developers/whitelist-account/quotas', 0],
+    ['whitelist quota', { product_type: 9 }, 'GET', '/developers/white-ip/quota', 200],
+    ['renewal preview', { team_id: 'A12345', user_product_id: 12 }, 'POST', '/developers/user-product/get-auto-renewal', 200],
+    ['renewal logs', { page: 2, size: 5 }, 'POST', '/developers/user-product/auto-renewal-logs', 200],
+    ['invoices list', {}, 'GET', '/developers/user-invoice/list', 200],
+    ['invoices records', { status: 2 }, 'GET', '/developers/user-invoice/record-list', 200],
+    ['invoices eligible-orders', {}, 'GET', '/developers/user-invoice/invoiceable-orders', 200],
+  ];
+  for (const [name, input, method, path, code] of cases) {
+    const h = await harness(t, { handler: () => json({ list: [] }, code) });
+    const args = Object.entries(input).flatMap(([key, value]) => [`--${key.replaceAll('_', '-')}`, String(value)]);
+    const result = await h.invoke([...name.split(' '), ...args]);
+    assert.equal(result.code, 0, `${name}: ${result.stderr}`);
+    const request = h.requests[0];
+    assert.equal(request.url.origin, 'https://api.duckip.com');
+    assert.equal(request.url.pathname, path);
+    assert.equal(request.method, method);
+    assert.equal(request.headers.Authorization, undefined);
+    for (const [key, value] of Object.entries(input)) {
+      assert.equal(method === 'GET' ? request.url.searchParams.get(key) : request.json[key], method === 'GET' ? String(value) : value);
+    }
+  }
+});
+
+test('resource-space validation rejects numeric IDs and preserves personal empty scope', () => {
+  for (const team_id of ['0', 0, '123456', 'abc', 'A123456789012', 'A1234!', ' A12345', null]) {
+    assert.throws(() => validateFields('usage flow-total', { team_id }));
+  }
+  assert.equal(validateFields('usage flow-total', { team_id: '' }).team_id, '');
+  assert.throws(() => validateFields('team wallet', { team_id: '' }), /empty/);
+  assert.throws(() => validateFields('accounts update', { team_id: 'A12345', account: 'user' }), /at least/);
+});
+
+test('key metadata supports page-size and redacts api_key fields', async (t) => {
+  const h = await harness(t, { handler: () => json({ list: [{ id: 1, api_key: 'sensitive-key-value' }] }, 0) });
+  const result = await h.invoke(['keys', 'list', '--page-size', '10', '--json']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(h.requests[0].url.pathname, '/developers/api-keys');
+  assert.equal(h.requests[0].url.searchParams.get('pageSize'), '10');
+  assert.equal(h.requests[0].url.searchParams.has('page_size'), false);
+  assert.doesNotMatch(result.stdout, /sensitive-key-value/);
+});
+
+test('all externally mutating CLI operations require confirmation before their write', async (t) => {
+  for (const args of [
+    ['ip', 'extract', '--num', '1'],
+    ['accounts', 'add', '--accounts', 'demo:Pass123', '--product-type', '9'],
+    ['accounts', 'enable', '--accounts', 'demo'],
+    ['accounts', 'limit', '--account', 'demo', '--limit', '1'],
+    ['whitelist', 'add', '--ips', '192.0.2.1', '--product-type', '9'],
+  ]) {
+    const h = await harness(t);
+    const result = await h.invoke(args);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--yes/);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test('payment preview failure or changed method never submits payment', async (t) => {
+  for (const quote of [
+    { trade_no: 'other', pay_fee: 1, pm_id: 3 },
+    { trade_no: 'T-2', pay_fee: null, pm_id: 3 },
+    { trade_no: 'T-2', pay_fee: 1, pm_id: 4 },
+  ]) {
+    const h = await harness(t, { handler: (_r, count) => json(count === 1 ? { trade_no: 'T-2', status: 0, pay_fee: 1 } : quote) });
+    const result = await h.invoke(['orders', 'pay', '--trade-no', 'T-2', '--pm-id', '3', '--yes']);
+    assert.equal(result.code, 1);
+    assert.equal(h.requests.length, 2);
+  }
 });
 
 test('strict parsing rejects unknown commands, inappropriate and duplicate flags', () => {
@@ -122,14 +215,44 @@ test('preflight without a valid price never creates an order', async (t) => {
   }
 });
 
-test('balance payment checks exact order and only sends pay_method 7', async (t) => {
+test('public payment checks exact order and uses the App Key contract', async (t) => {
   const h = await harness(t, { handler: () => json({ trade_no: 'order1', pay_fee: '18.20', status: 0 }) });
   assert.equal((await h.invoke(['orders', 'pay', '--trade-no', 'order1', '--yes'])).code, 0);
-  assert.equal(h.requests[0].url.pathname, '/web_v1/order/info');
-  assert.equal(h.requests[1].url.pathname, '/web_v1/pay');
-  assert.equal(h.requests[1].json.pay_method, 7);
-  assert.equal(h.requests[1].json.app_key, undefined);
-  assert.equal(h.requests[1].headers.Authorization, 'Bearer test-token');
+  assert.equal(h.requests[0].url.pathname, '/developers/order/info');
+  assert.equal(h.requests[1].url.pathname, '/developers/pay/pay-check');
+  assert.equal(h.requests[2].url.pathname, '/developers/pay');
+  assert.equal(h.requests[2].url.searchParams.get('app_key'), 'test-app-key');
+  assert.equal(h.requests[2].url.searchParams.get('trade_no'), 'order1');
+  assert.equal(h.requests[2].json, undefined);
+  assert.equal(h.requests[2].headers.Authorization, undefined);
+  assert.equal(h.requests[0].url.searchParams.has('team_id'), false);
+  assert.doesNotMatch((await h.invoke(['orders', 'pay', '--trade-no', 'order1', '--dry-run'])).stdout, /pay_method|undefined/);
+});
+
+test('new public read-only commands use documented paths and resource-space parameters', async (t) => {
+  const h = await harness(t, { handler: () => json({ list: [] }) });
+  for (const [args, pathname] of [
+    [['usage', 'flow-total', '--unit', 'GB'], '/developers/user-usage-flow/flow-total'],
+    [['team', 'wallet', '--team-id', 'A12345'], '/developers/team/wallet/detail'],
+    [['accounts', 'quota', '--product-type', '9'], '/developers/whitelist-account/quota'],
+    [['whitelist', 'quotas'], '/developers/white-ip/quotas'],
+    [['invoices', 'statistics'], '/developers/user-invoice/statistics'],
+  ]) {
+    assert.equal((await h.invoke(args)).code, 0);
+    assert.equal(h.requests.at(-1).url.pathname, pathname);
+    assert.equal(h.requests.at(-1).url.searchParams.get('app_key'), 'test-app-key');
+  }
+  assert.equal(h.requests[1].url.searchParams.get('team_id'), 'A12345');
+  assert.throws(() => validateFields('team wallet', { team_id: '0' }), /team-id/);
+});
+
+test('payment check sends POST query parameters without a JSON body', async (t) => {
+  const h = await harness(t);
+  assert.equal((await h.invoke(['orders', 'pay-check', '--trade-no', 'T-2', '--pm-id', '3'])).code, 0);
+  assert.equal(h.requests[0].method, 'POST');
+  assert.equal(h.requests[0].url.pathname, '/developers/pay/pay-check');
+  assert.equal(h.requests[0].url.searchParams.get('pm_id'), '3');
+  assert.equal(h.requests[0].json, undefined);
 });
 
 test('payment refuses already paid orders, mismatched IDs and missing prices', async (t) => {
@@ -257,18 +380,18 @@ test('piped parameters work and unknown JSON fields fail before network', async 
 
 test('extracted nested IP lists become pipe-friendly lines', async (t) => {
   const h = await harness(t, { handler: () => json({ list: [['1.2.3.4:80', '1.2.3.5:81']] }) });
-  const result = await h.invoke(['ip', 'extract', '--num', '2']);
+  const result = await h.invoke(['ip', 'extract', '--num', '2', '--yes']);
   assert.equal(result.stdout, '1.2.3.4:80\n1.2.3.5:81\n');
   assert.equal(h.requests[0].url.searchParams.get('format'), 'json');
 });
 
 test('plain-text extraction is accepted but JSON API errors and HTML are rejected', async (t) => {
   const plain = await harness(t, { handler: () => new Response('1.2.3.4:80\n', { headers: { 'content-type': 'text/plain' } }) });
-  assert.equal((await plain.invoke(['ip', 'extract', '--format', 'text'])).stdout, '1.2.3.4:80\n');
+  assert.equal((await plain.invoke(['ip', 'extract', '--format', 'text', '--yes'])).stdout, '1.2.3.4:80\n');
   const failed = await harness(t, { handler: () => json({}, 3) });
-  assert.equal((await failed.invoke(['ip', 'extract', '--format', 'text'])).code, 3);
+  assert.equal((await failed.invoke(['ip', 'extract', '--format', 'text', '--yes'])).code, 3);
   const html = await harness(t, { handler: () => new Response('<html>login</html>') });
-  assert.equal((await html.invoke(['ip', 'extract', '--format', 'text'])).code, 1);
+  assert.equal((await html.invoke(['ip', 'extract', '--format', 'text', '--yes'])).code, 1);
 });
 
 test('zero success is scoped to documented newer public APIs', async () => {

@@ -3,10 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { isIP } from 'node:net';
 import { commands, flagName, validateFields } from './commands.js';
 import { configPath, readConfig, saveConfig, credentials } from './config.js';
 import { createClient, maskSecrets } from './client.js';
+import { version } from './metadata.js';
 
 const globals = {
   help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
@@ -37,14 +37,14 @@ export function parseCommand(argv) {
   if (!spec && !(values.help && (!name || Object.keys(commands).some((key) => key.startsWith(`${name} `)))) && name) throw new Error(`Unknown command: ${name}. Run duckip --help.`);
   if (spec) {
     for (const key of Object.keys(values)) {
-      if (!Object.hasOwn(globals, key) && !Object.hasOwn(spec.fields, key.replaceAll('-', '_'))) throw new Error(`Unknown option for ${name}: --${key}`);
+      if (!Object.hasOwn(globals, key) && !Object.keys(spec.fields).some((field) => flagName(field) === key)) throw new Error(`Unknown option for ${name}: --${key}`);
     }
   }
   return { values, name, spec };
 }
 
 function help(name, spec) {
-  const lines = ['DuckIP CLI 0.1.0', ''];
+  const lines = [`DuckIP CLI ${version}`, ''];
   if (spec) {
     lines.push(`Usage: duckip ${name} [options]`, '', spec.description, '');
     if (spec.path) lines.push(`${spec.method} ${spec.path}`, `Authentication: ${spec.auth}`, '');
@@ -61,10 +61,10 @@ function help(name, spec) {
     '  --json                     Output the API envelope as JSON',
     '  --params <file.json|->      Read API parameters from a JSON object (or stdin)',
     '  --dry-run                  Print a redacted request without calling the API',
-    '  --yes, -y                  Confirm an order, payment, or destructive operation',
-    '  --show-secrets             Reveal proxy passwords in successful output',
+    '  --yes, -y                  Confirm quota consumption or an external change',
+    '  --show-secrets             Reveal sensitive fields in successful output',
     '  --config <path>            Use an alternate credential file',
-    '  --api-url <origin>         API origin (default https://api.duckip.cn)',
+    '  --api-url <origin>         API origin (default https://api.duckip.com)',
     '  --timeout <ms>             Request timeout (default 20000)',
     '  --language <zh|en>         API response language (default zh)',
     '  --help, -h                 Show help for a command',
@@ -115,7 +115,7 @@ export async function run(argv, options = {}) {
     const parsed = parseCommand(argv);
     flags = parsed.values;
     const { spec, name } = parsed;
-    if (flags.version) { io.stdout.write('0.1.0\n'); return 0; }
+    if (flags.version) { io.stdout.write(`${version}\n`); return 0; }
     if (flags.help || !name) { io.stdout.write(`${help(name, spec)}\n`); return 0; }
 
     let input = {};
@@ -137,14 +137,13 @@ export async function run(argv, options = {}) {
       if (/password|verify_code/.test(key)) secrets.push(value);
       if (key === 'accounts' && name === 'accounts add') secrets.push(...value.split(',').map((pair) => pair.split(':')[1]));
     }
-    if (params.ips && params.ips.split(/[,\n]/).some((ip) => !isIP(ip.trim()))) throw new Error('--ips must contain valid IP addresses');
     if (flags.language && !['zh', 'en'].includes(flags.language)) throw new Error('--language must be zh or en');
     const path = flags.config || configPath(env);
     const config = await readConfig(path);
     secrets.push(config.appKey, config.token);
     let creds = credentials(config, env);
     const makeClient = () => createClient({
-      baseUrl: flags['api-url'] || env.DUCKIP_API_URL || 'https://api.duckip.cn',
+      baseUrl: flags['api-url'] || env.DUCKIP_API_URL || 'https://api.duckip.com',
       credentials: creds, timeout: flags.timeout === undefined ? 20000 : Number(flags.timeout),
       language: flags.language || 'zh', fetchImpl: options.fetchImpl,
     });
@@ -221,7 +220,7 @@ export async function run(argv, options = {}) {
     if (name === 'ip extract' && !params.format) params.format = 'json';
     if (flags['dry-run']) {
       if (spec.action === 'create') print({ steps: [client.preview(commands['orders check'], params), client.preview(spec, params)], confirmation_required: true });
-      else if (spec.action === 'pay') print({ steps: [client.preview(commands['orders info'], params), client.preview(spec, { ...params, pay_method: 7 })], confirmation_required: true });
+      else if (spec.action === 'pay') print({ steps: [client.preview(commands['orders info'], { team_id: params.team_id, trade_no: params.trade_no }), client.preview(commands['orders pay-check'], params), client.preview(spec, params)], confirmation_required: true });
       else print(client.preview(spec, params));
       return 0;
     }
@@ -232,15 +231,18 @@ export async function run(argv, options = {}) {
       io.stderr.write(`Order preview:\n${JSON.stringify(maskSecrets(quote.data, secrets), null, 2)}\n`);
       await confirm('Create this order?');
     } else if (spec.action === 'pay') {
-      const result = await client.request(commands['orders info'], params);
+      const result = await client.request(commands['orders info'], { team_id: params.team_id, trade_no: params.trade_no });
       const order = result.data;
       if (!order || String(order.trade_no) !== params.trade_no) throw new Error('Order response does not match --trade-no');
       if (order.status !== 0 && order.status !== '0') throw new Error('Only an unpaid order (status 0) can be paid');
       const fee = Number(order.pay_fee);
       if (!['number', 'string'].includes(typeof order.pay_fee) || String(order.pay_fee).trim() === '' || !Number.isFinite(fee) || fee < 0) throw new Error('Order has no valid payable amount');
-      io.stderr.write(`Balance payment preview:\n${JSON.stringify(maskSecrets({ trade_no: order.trade_no, title: order.title, pay_fee: order.pay_fee, payment_method: 'balance (7)' }, secrets), null, 2)}\n`);
-      await confirm('Debit account balance for this order?');
-      params.pay_method = 7;
+      const quote = (await client.request(commands['orders pay-check'], params)).data;
+      if (!quote || String(quote.trade_no) !== params.trade_no) throw new Error('Payment preview does not match --trade-no');
+      if (!['number', 'string'].includes(typeof quote.pay_fee) || String(quote.pay_fee).trim() === '' || !Number.isFinite(Number(quote.pay_fee)) || Number(quote.pay_fee) < 0) throw new Error('Payment preview has no valid payable amount');
+      if (params.pm_id !== undefined && String(quote.pm_id) !== String(params.pm_id)) throw new Error('Payment preview does not match --pm-id');
+      io.stderr.write(`Payment preview:\n${JSON.stringify(maskSecrets(quote, secrets), null, 2)}\n`);
+      await confirm('Start payment for this order? Check order status afterward.');
     } else if (spec.confirm) {
       io.stderr.write(`${JSON.stringify(maskSecrets(params, secrets), null, 2)}\n`);
       await confirm(spec.description);

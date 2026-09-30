@@ -32,8 +32,8 @@ codex mcp add duckip -- npx -y @duckip/mcp
 
 ## 后续可完善的发布能力
 
-1. CLI 和 MCP 各自维护一份命令定义、客户端和配置代码，长期会产生工具列表与 CLI 行为漂移。后续可以抽出 `packages/core`，让两者共享 API contract、认证和脱敏逻辑。
-2. 版本号在 CLI、MCP、User-Agent 和帮助文本中有硬编码，后续发布流程应从 package version 读取。
+1. CLI 和 MCP 暂时各自携带命令定义、客户端和配置代码，便于独立发布；已增加 contract/client 一致性测试。后续可评估共享核心包，但不能破坏独立安装。
+2. CLI 帮助、--version、MCP serverInfo 和 User-Agent 已从各自 package.json 读取版本；发布时仍需分别更新两个包的版本。
 3. 目前只有 Node.js 入口，没有 Windows、macOS、Linux 的自包含可执行文件、签名、校验和及更新清单。
 4. 需要在干净用户目录持续验证 `npx -y @duckip/cli --help`、MCP 初始化和 Skill 安装。
 
@@ -66,3 +66,15 @@ codex mcp add duckip -- npx -y @duckip/mcp
 - MCP 客户端能看到只读工具；提取、订单、账户和支付工具仍要求明确确认。
 - `DUCKIP_APP_KEY` 与 `DUCKIP_TOKEN` 的来源、优先级和脱敏行为在三种分发方式中一致。
 - Windows、macOS、Linux 的归档文件名、架构、最低系统版本和校验和在下载页明确显示。
+
+## 新接口与下载页同步
+
+当前源码新增：流量总量/余量、团队列表/详情/资产/钱包/流水、账户与白名单配额、Key 元数据、自动续费预览/日志、发票查询及付款费用预览。
+订单详情与付款使用公共 App Key 接口；个人现金余额仍需要后台 Token。详见 [CLI](../packages/cli/README.md)、[MCP](../packages/mcp/README.md) 和 [契约边界](../packages/cli/docs/api-notes.md)。
+
+下载页应分别列出 CLI、MCP 和 GitHub Skill，并链接对应说明，不应将 Skill 安装命令误写成运行本地 skill 的命令。
+GitHub Skill 路径为本仓库 skills/duckip-cli，目录内自带 references/commands.md；不要使用开发机绝对路径。
+第三方安装器（包括 Hermes）的具体命令应在对应已安装版本上验证后再对客户标为可用，仓库有文件不等于安装器已验证成功。
+
+新增能力需先按 [发布验收](release.md) 发布 CLI/MCP，再更新 GitHub Skill 和下载页能力说明。
+本轮未生成三端独立二进制，也未执行构建、推送或 npm publish。

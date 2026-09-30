@@ -1,3 +1,5 @@
+import { packageName, version } from './metadata.js';
+
 export class ApiError extends Error {
   constructor(message, code, data) {
     super(message);
@@ -18,7 +20,7 @@ export function maskSecrets(value, secrets = []) {
   if (Array.isArray(value)) return value.map((entry) => maskSecrets(entry, secrets));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-      /password|passwd|token|app_?key|openid|secret|verify_code|authorization/i.test(key) ? '[REDACTED]' :
+      /password|passwd|token|app_?key|api_?key|openid|secret|verify_code|authorization/i.test(key) ? '[REDACTED]' :
         key === 'accounts' && typeof item === 'string' && item.includes(':') ? item.replace(/:[^,]+/g, ':[REDACTED]') : maskSecrets(item, secrets),
     ]));
   }
@@ -26,12 +28,12 @@ export function maskSecrets(value, secrets = []) {
     for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) {
       value = value.replaceAll(secret, '[REDACTED]').replaceAll(encodeURIComponent(secret), '[REDACTED]');
     }
-    value = value.replace(/([?&](?:app_key|access_token|token)=)[^&\s]*/gi, '$1[REDACTED]');
+    value = value.replace(/([?&](?:app_key|api_key|access_token|token)=)[^&\s]*/gi, '$1[REDACTED]');
   }
   return value;
 }
 
-export function createClient({ baseUrl = 'https://api.duckip.cn', credentials = {}, timeout = 20000, language = 'zh', fetchImpl = fetch } = {}) {
+export function createClient({ baseUrl = 'https://api.duckip.com', credentials = {}, timeout = 20000, language = 'zh', fetchImpl = fetch } = {}) {
   const base = new URL(baseUrl);
   if (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname))) {
     throw new Error('API URL must use HTTPS (HTTP is allowed only for localhost tests)');
@@ -40,8 +42,8 @@ export function createClient({ baseUrl = 'https://api.duckip.cn', credentials = 
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 300000) throw new Error('Timeout must be 1-300000 ms');
 
   function prepare(spec, params, allowMissing = false) {
-    const data = { ...params, language };
-    const headers = { Accept: 'application/json', Language: language, 'User-Agent': 'duckip-cli/0.1.0' };
+    const data = Object.fromEntries(Object.entries({ ...params, language }).filter(([, value]) => value !== undefined));
+    const headers = { Accept: 'application/json', Language: language, 'User-Agent': `${packageName.replace('@duckip/', 'duckip-')}/${version}` };
     if (spec.auth === 'app') {
       if (!credentials.appKey && !allowMissing) throw new Error('App key required. Run duckip auth key or duckip auth login, or set DUCKIP_APP_KEY.');
       data.app_key = credentials.appKey || '<DUCKIP_APP_KEY>';
@@ -52,9 +54,10 @@ export function createClient({ baseUrl = 'https://api.duckip.cn', credentials = 
     if (spec.path.startsWith('/web_v1/') && credentials.deviceId) headers.hash = credentials.deviceId;
     const url = new URL(spec.path, base);
     let body;
-    if (spec.method === 'GET') {
+    if (spec.method === 'GET' || spec.query) {
       for (const [key, value] of Object.entries(data)) url.searchParams.set(key, String(value));
-    } else {
+    }
+    if (spec.method !== 'GET' && !spec.query) {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(data);
     }
